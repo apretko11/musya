@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+
+# Data
+*.parquet
+data/
+datasets/
+
+# Models / checkpoints
+*.pt
+*.pth
+*.onnx
+checkpoints/
+
+# Experiment output
+runs/
+logs/
+results/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
