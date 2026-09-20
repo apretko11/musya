@@ -1,12 +1,19 @@
+import argparse
+import json
+import random
+import time
+from pathlib import Path
+
+import numpy as np
 import pyarrow.parquet as pq
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
 
 from axial_gru import (
     WunderAxialGRUModel,
     WunderLoopedAxialGRUModel,
-    count_parameters,
     WunderReinjectedLoopedAxialGRUModel,
+    count_parameters,
 )
 
 from wunder_dataset import (
@@ -15,15 +22,121 @@ from wunder_dataset import (
 )
 
 
-DEVICE = torch.device("cpu")
+def parse_args():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--model",
+        choices=[
+            "baseline",
+            "looped",
+            "reinjected",
+        ],
+        required=True,
+    )
+
+    parser.add_argument(
+        "--data-path",
+        type=str,
+        default=TRAIN_PATH,
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Model/training random seed.",
+    )
+
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=1234,
+        help="Fixed seed controlling train/validation split.",
+    )
+
+    parser.add_argument(
+        "--train-sequences",
+        type=int,
+        default=100,
+    )
+
+    parser.add_argument(
+        "--valid-sequences",
+        type=int,
+        default=20,
+    )
+
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=3,
+    )
+
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=512,
+    )
+
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=1e-4,
+    )
+
+    parser.add_argument(
+        "--num-blocks",
+        type=int,
+        default=3,
+    )
+
+    parser.add_argument(
+        "--num-iterations",
+        type=int,
+        default=3,
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="results",
+    )
+
+    return parser.parse_args()
+
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def build_model(args):
+    if args.model == "baseline":
+        return WunderAxialGRUModel(
+            num_blocks=args.num_blocks,
+        )
+
+    if args.model == "looped":
+        return WunderLoopedAxialGRUModel(
+            num_iterations=args.num_iterations,
+        )
+
+    if args.model == "reinjected":
+        return WunderReinjectedLoopedAxialGRUModel(
+            num_iterations=args.num_iterations,
+        )
+
+    raise ValueError(
+        f"Unknown model: {args.model}"
+    )
 
 
 def detach_hidden_states(hidden_states):
-    """
-    Detach GRU hidden states from the previous
-    truncated-BPTT computation graph.
-    """
-
     if hidden_states is None:
         return None
 
@@ -39,13 +152,9 @@ def train_sequence(
     x,
     target,
     mask,
-    chunk_size=512,
+    device,
+    chunk_size,
 ):
-    """
-    Train on one complete Wunder sequence using
-    truncated backpropagation through time.
-    """
-
     model.train()
 
     hidden_states = None
@@ -65,20 +174,24 @@ def train_sequence(
             T,
         )
 
-        x_chunk = x[
-            start:end
-        ].unsqueeze(0).to(DEVICE)
+        x_chunk = (
+            x[start:end]
+            .unsqueeze(0)
+            .to(device)
+        )
 
-        target_chunk = target[
-            start:end
-        ].unsqueeze(0).to(DEVICE)
+        target_chunk = (
+            target[start:end]
+            .unsqueeze(0)
+            .to(device)
+        )
 
-        mask_chunk = mask[
-            start:end
-        ].unsqueeze(0).to(DEVICE)
+        mask_chunk = (
+            mask[start:end]
+            .unsqueeze(0)
+            .to(device)
+        )
 
-        # Some chunks may theoretically contain no
-        # prediction positions.
         num_prediction_steps = (
             mask_chunk.sum().item()
         )
@@ -91,10 +204,6 @@ def train_sequence(
             return_hidden=True,
         )
 
-        # Detach before moving to the next chunk.
-        #
-        # This preserves the GRU state values while
-        # truncating the gradient graph.
         hidden_states = detach_hidden_states(
             hidden_states
         )
@@ -102,15 +211,13 @@ def train_sequence(
         if num_prediction_steps == 0:
             continue
 
-        loss = nn.functional.mse_loss(
+        loss = F.mse_loss(
             prediction[mask_chunk],
             target_chunk[mask_chunk],
         )
 
         loss.backward()
 
-        # GRUs + recurrent-depth models can produce
-        # large gradients, so clip them.
         torch.nn.utils.clip_grad_norm_(
             model.parameters(),
             max_norm=1.0,
@@ -133,76 +240,13 @@ def train_sequence(
     )
 
 
-def train_model(
-    model,
-    parquet_file,
-    row_groups,
-    epochs=2,
-    chunk_size=512,
-    lr=1e-4,
-):
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=lr,
-    )
-
-    print(
-        "Parameters:",
-        count_parameters(model),
-    )
-
-    for epoch in range(epochs):
-
-        epoch_loss = 0.0
-
-        print(
-            f"\nEpoch {epoch + 1}/{epochs}"
-        )
-
-        for sequence_number, row_group in enumerate(
-            row_groups,
-            start=1,
-        ):
-            x, target, mask, seq_ix = load_sequence(
-                parquet_file,
-                row_group,
-            )
-
-            loss = train_sequence(
-                model,
-                optimizer,
-                x,
-                target,
-                mask,
-                chunk_size=chunk_size,
-            )
-
-            epoch_loss += loss
-
-            print(
-                f"  sequence "
-                f"{sequence_number:2d}/"
-                f"{len(row_groups)} "
-                f"(seq_ix={seq_ix}): "
-                f"loss = {loss:.6f}"
-            )
-
-        mean_loss = (
-            epoch_loss
-            / len(row_groups)
-        )
-
-        print(
-            f"Epoch mean loss: "
-            f"{mean_loss:.6f}"
-        )
-
 def evaluate_sequence(
     model,
     x,
     target,
     mask,
-    chunk_size=512,
+    device,
+    chunk_size,
 ):
     model.eval()
 
@@ -225,17 +269,23 @@ def evaluate_sequence(
                 T,
             )
 
-            x_chunk = x[
-                start:end
-            ].unsqueeze(0).to(DEVICE)
+            x_chunk = (
+                x[start:end]
+                .unsqueeze(0)
+                .to(device)
+            )
 
-            target_chunk = target[
-                start:end
-            ].unsqueeze(0).to(DEVICE)
+            target_chunk = (
+                target[start:end]
+                .unsqueeze(0)
+                .to(device)
+            )
 
-            mask_chunk = mask[
-                start:end
-            ].unsqueeze(0).to(DEVICE)
+            mask_chunk = (
+                mask[start:end]
+                .unsqueeze(0)
+                .to(device)
+            )
 
             prediction, hidden_states = model(
                 x_chunk,
@@ -250,7 +300,7 @@ def evaluate_sequence(
             if num_prediction_steps == 0:
                 continue
 
-            loss = nn.functional.mse_loss(
+            loss = F.mse_loss(
                 prediction[mask_chunk],
                 target_chunk[mask_chunk],
             )
@@ -269,119 +319,399 @@ def evaluate_sequence(
         / total_prediction_steps
     )
 
-def evaluate_model(
-    model,
-    parquet_file,
-    row_groups,
-    chunk_size=512,
+
+def make_split(
+    num_row_groups,
+    train_sequences,
+    valid_sequences,
+    split_seed,
 ):
-    print("\nValidation:")
+    required = (
+        train_sequences
+        + valid_sequences
+    )
 
-    total_loss = 0.0
-
-    for sequence_number, row_group in enumerate(
-        row_groups,
-        start=1,
-    ):
-        x, target, mask, seq_ix = load_sequence(
-            parquet_file,
-            row_group,
+    if required > num_row_groups:
+        raise ValueError(
+            f"Requested {required} sequences, "
+            f"but dataset only has "
+            f"{num_row_groups} row groups."
         )
 
-        loss = evaluate_sequence(
-            model,
-            x,
-            target,
-            mask,
-            chunk_size=chunk_size,
-        )
+    indices = list(
+        range(num_row_groups)
+    )
 
-        total_loss += loss
+    rng = random.Random(
+        split_seed
+    )
 
+    rng.shuffle(indices)
+
+    train_groups = indices[
+        :train_sequences
+    ]
+
+    valid_groups = indices[
+        train_sequences:required
+    ]
+
+    return (
+        train_groups,
+        valid_groups,
+    )
+
+
+def main():
+    args = parse_args()
+
+    set_seed(args.seed)
+
+    device = torch.device(
+        "cuda"
+        if torch.cuda.is_available()
+        else "cpu"
+    )
+
+    print("Device:", device)
+
+    if torch.cuda.is_available():
         print(
-            f"  sequence "
-            f"{sequence_number:2d}/"
-            f"{len(row_groups)} "
-            f"(seq_ix={seq_ix}): "
-            f"loss = {loss:.6f}"
+            "GPU:",
+            torch.cuda.get_device_name(0),
         )
-
-    mean_loss = (
-        total_loss
-        / len(row_groups)
-    )
-
-    print(
-        f"Validation mean loss: "
-        f"{mean_loss:.6f}"
-    )
-
-    return mean_loss
-
-if __name__ == "__main__":
-
-    torch.manual_seed(0)
 
     pf = pq.ParquetFile(
-        TRAIN_PATH
+        args.data_path
     )
 
-    # Keep this deliberately tiny for the laptop.
-    #
-    # Four complete sequences:
-    # 4 × 20,000 = 80,000 timesteps.
-    train_row_groups = [
-        0,
-        1,
-        2,
-        3,
-    ]
-    
-    
-    valid_row_groups = [
-        4,
-        5,
-    ]
+    train_groups, valid_groups = make_split(
+        num_row_groups=pf.metadata.num_row_groups,
+        train_sequences=args.train_sequences,
+        valid_sequences=args.valid_sequences,
+        split_seed=args.split_seed,
+    )
+
+    model = build_model(
+        args
+    ).to(device)
+
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=args.lr,
+    )
+
+    parameter_count = count_parameters(
+        model
+    )
 
     print(
-        "Training row groups:",
-        train_row_groups,
+        "Model:",
+        args.model,
     )
 
-    # --------------------------------------------
-    # For now train ONLY ONE model at a time.
-    # Start with Patrick-style baseline.
-    # --------------------------------------------
-
-    model = WunderReinjectedLoopedAxialGRUModel(
-        num_iterations=3,
-    ).to(DEVICE)
-
-    train_model(
-        model,
-        pf,
-        train_row_groups,
-        epochs=2,
-        chunk_size=512,
-        lr=1e-4,
+    print(
+        "Parameters:",
+        parameter_count,
     )
-    
-    evaluate_model(
-        model,
-        pf,
-        valid_row_groups,
-        chunk_size=512,
+
+    print(
+        "Training sequences:",
+        len(train_groups),
     )
-    
-    if hasattr(model, "reinjection_logit"):
+
+    print(
+        "Validation sequences:",
+        len(valid_groups),
+    )
+
+    # --------------------------------------------------
+    # Output paths
+    # --------------------------------------------------
+
+    output_dir = Path(
+        args.output_dir
+    )
+
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    run_name = (
+        f"{args.model}"
+        f"_seed{args.seed}"
+        f"_split{args.split_seed}"
+    )
+
+    checkpoint_path = (
+        output_dir
+        / f"{run_name}.pt"
+    )
+
+    results_path = (
+        output_dir
+        / f"{run_name}.json"
+    )
+
+    # --------------------------------------------------
+    # Training bookkeeping
+    # --------------------------------------------------
+
+    history = []
+
+    best_valid = float("inf")
+    best_epoch = None
+
+    start_time = time.time()
+
+    # --------------------------------------------------
+    # Train
+    # --------------------------------------------------
+
+    for epoch in range(
+        args.epochs
+    ):
         print(
-            "\nLearned reinjection gate:",
+            f"\nEpoch "
+            f"{epoch + 1}/"
+            f"{args.epochs}"
+        )
+
+        train_losses = []
+
+        for i, row_group in enumerate(
+            train_groups,
+            start=1,
+        ):
+            x, target, mask, seq_ix = (
+                load_sequence(
+                    pf,
+                    row_group,
+                )
+            )
+
+            loss = train_sequence(
+                model=model,
+                optimizer=optimizer,
+                x=x,
+                target=target,
+                mask=mask,
+                device=device,
+                chunk_size=args.chunk_size,
+            )
+
+            train_losses.append(
+                loss
+            )
+
+            print(
+                f"  train "
+                f"{i:3d}/"
+                f"{len(train_groups)} "
+                f"(seq_ix={seq_ix}): "
+                f"{loss:.6f}"
+            )
+
+        train_mean = float(
+            np.mean(train_losses)
+        )
+
+        print(
+            "Train mean loss:",
+            f"{train_mean:.6f}",
+        )
+
+        # ----------------------------------------------
+        # Validation
+        # ----------------------------------------------
+
+        valid_losses = []
+
+        for i, row_group in enumerate(
+            valid_groups,
+            start=1,
+        ):
+            x, target, mask, seq_ix = (
+                load_sequence(
+                    pf,
+                    row_group,
+                )
+            )
+
+            loss = evaluate_sequence(
+                model=model,
+                x=x,
+                target=target,
+                mask=mask,
+                device=device,
+                chunk_size=args.chunk_size,
+            )
+
+            valid_losses.append(
+                loss
+            )
+
+            print(
+                f"  valid "
+                f"{i:3d}/"
+                f"{len(valid_groups)} "
+                f"(seq_ix={seq_ix}): "
+                f"{loss:.6f}"
+            )
+
+        valid_mean = float(
+            np.mean(valid_losses)
+        )
+
+        print(
+            "Validation mean loss:",
+            f"{valid_mean:.6f}",
+        )
+
+        # ----------------------------------------------
+        # Save best validation checkpoint
+        # ----------------------------------------------
+
+        if valid_mean < best_valid:
+            best_valid = valid_mean
+            best_epoch = epoch + 1
+
+            torch.save(
+                model.state_dict(),
+                checkpoint_path,
+            )
+
+            print(
+                f"New best validation loss: "
+                f"{best_valid:.6f}"
+            )
+
+        epoch_result = {
+            "epoch": epoch + 1,
+            "train_mse": train_mean,
+            "valid_mse": valid_mean,
+        }
+
+        history.append(
+            epoch_result
+        )
+
+    # --------------------------------------------------
+    # Timing
+    # --------------------------------------------------
+
+    elapsed_seconds = (
+        time.time() - start_time
+    )
+
+    print(
+        "\nElapsed time:",
+        f"{elapsed_seconds:.2f} seconds",
+    )
+
+    print(
+        "Best epoch:",
+        best_epoch,
+    )
+
+    print(
+        "Best validation MSE:",
+        f"{best_valid:.6f}",
+    )
+
+    # --------------------------------------------------
+    # Reload the best model
+    # --------------------------------------------------
+
+    model.load_state_dict(
+        torch.load(
+            checkpoint_path,
+            map_location=device,
+        )
+    )
+
+    # --------------------------------------------------
+    # Inspect reinjection gate, if present
+    # --------------------------------------------------
+
+    reinjection_gate = None
+
+    if hasattr(
+        model,
+        "reinjection_logit",
+    ):
+        reinjection_gate = float(
             torch.sigmoid(
                 model.reinjection_logit
             ).item()
         )
 
-    torch.save(
-        model.state_dict(),
-        "reinjected_model.pt",
+        print(
+            "\nLearned reinjection gate:",
+            reinjection_gate,
+        )
+
+    # --------------------------------------------------
+    # Save experiment metadata/results
+    # --------------------------------------------------
+
+    results = {
+        "model": args.model,
+        "seed": args.seed,
+        "split_seed": args.split_seed,
+        "train_sequences": (
+            args.train_sequences
+        ),
+        "valid_sequences": (
+            args.valid_sequences
+        ),
+        "epochs": args.epochs,
+        "chunk_size": args.chunk_size,
+        "learning_rate": args.lr,
+        "num_blocks": args.num_blocks,
+        "num_iterations": (
+            args.num_iterations
+        ),
+        "parameters": parameter_count,
+        "device": str(device),
+        "train_row_groups": (
+            train_groups
+        ),
+        "valid_row_groups": (
+            valid_groups
+        ),
+        "best_epoch": best_epoch,
+        "best_valid_mse": best_valid,
+        "elapsed_seconds": (
+            elapsed_seconds
+        ),
+        "reinjection_gate": (
+            reinjection_gate
+        ),
+        "history": history,
+    }
+
+    with open(
+        results_path,
+        "w",
+    ) as f:
+        json.dump(
+            results,
+            f,
+            indent=2,
+        )
+
+    print(
+        "\nSaved best checkpoint:",
+        checkpoint_path,
     )
+
+    print(
+        "Saved results:",
+        results_path,
+    )
+
+
+if __name__ == "__main__":
+    main()
