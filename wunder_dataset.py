@@ -2,10 +2,20 @@ import numpy as np
 import pyarrow.parquet as pq
 import torch
 
+from pathlib import Path
 
-TRAIN_PATH = (
-    "/home/alexanderpretko/"
-    "wnn_connectome_starterpack/datasets/train.parquet"
+DATASET_DIR = (
+    Path.home()
+    / "wnn_connectome_starterpack"
+    / "datasets"
+)
+
+TRAIN_PATH = str(
+    DATASET_DIR / "train.parquet"
+)
+
+VALID_PATH = str(
+    DATASET_DIR / "valid.parquet"
 )
 
 
@@ -226,6 +236,133 @@ def load_sequence(
         seq_ix,
     )
 
+def load_validation_sequence(
+    parquet_file,
+    row_group_index,
+):
+    """
+    Load one complete labeled Wunder validation sequence.
+
+    Returns
+    -------
+    x:
+        [T, 2, 60]
+
+    target:
+        [T, 2]
+
+    need_prediction:
+        [T]
+
+    is_scored:
+        [T]
+
+    seq_ix:
+        sequence identifier
+    """
+
+    columns = (
+        META_COLUMNS
+        + ["is_scored"]
+        + I0_COLUMNS
+        + I1_COLUMNS
+        + SHARED_COLUMNS
+        + TARGET_COLUMNS
+    )
+
+    table = parquet_file.read_row_group(
+        row_group_index,
+        columns=columns,
+    )
+
+    seq_ids = column_to_numpy(
+        table,
+        "seq_ix",
+    )
+
+    steps = column_to_numpy(
+        table,
+        "step_in_seq",
+    )
+
+    need_prediction = column_to_numpy(
+        table,
+        "need_prediction",
+    ).astype(bool)
+
+    is_scored = column_to_numpy(
+        table,
+        "is_scored",
+    ).astype(bool)
+
+    unique_sequences = np.unique(
+        seq_ids
+    )
+
+    if len(unique_sequences) != 1:
+        raise ValueError(
+            "Expected one sequence per row group, "
+            f"found {len(unique_sequences)}"
+        )
+
+    seq_ix = int(
+        unique_sequences[0]
+    )
+
+    expected_steps = np.arange(
+        len(steps)
+    )
+
+    if not np.array_equal(
+        steps,
+        expected_steps,
+    ):
+        raise ValueError(
+            "step_in_seq is not contiguous from 0."
+        )
+
+    i0 = np.column_stack([
+        column_to_numpy(table, name)
+        for name in I0_COLUMNS
+    ]).astype(np.float32)
+
+    i1 = np.column_stack([
+        column_to_numpy(table, name)
+        for name in I1_COLUMNS
+    ]).astype(np.float32)
+
+    shared = np.column_stack([
+        column_to_numpy(table, name)
+        for name in SHARED_COLUMNS
+    ]).astype(np.float32)
+
+    i0 = np.concatenate(
+        [i0, shared],
+        axis=1,
+    )
+
+    i1 = np.concatenate(
+        [i1, shared],
+        axis=1,
+    )
+
+    x = np.stack(
+        [i0, i1],
+        axis=1,
+    )
+
+    target = np.column_stack([
+        column_to_numpy(table, name)
+        for name in TARGET_COLUMNS
+    ]).astype(np.float32)
+
+    return (
+        torch.from_numpy(x),
+        torch.from_numpy(target),
+        torch.from_numpy(need_prediction),
+        torch.from_numpy(is_scored),
+        seq_ix,
+    )
 
 if __name__ == "__main__":
 
