@@ -1,1 +1,25 @@
 We're taking an axial financial time-series architecture that separately models cross-instrument relationships and temporal dynamics, and testing whether independently parameterized depth can be replaced by recurrent/shared depth. We then add a feedback mechanism that lets each refinement iteration revisit the original encoded observations. The hypothesis is that iterative refinement plus input reinjection can preserve or improve predictive performance with substantially fewer parameters.
+
+We investigate recurrent-depth parameter sharing in a dual-axis cross-sectional/temporal architecture, where cross-asset relations are modeled by attention and temporal dynamics by a GRU, and study whether source reinjection can recover the performance lost by aggressive weight sharing.
+
+The most defensible experimental story would be:
+\[
+\text{Independent axial blocks}
+\]
+vs.
+\[
+\text{shared recurrent axial block}
+\]
+vs.
+\[
+\text{shared recurrent axial block + source reinjection}.
+\]
+Then ask:
+1. How much parameter reduction do we get?
+2. How much predictive performance is lost from weight tying?
+3. Does reinjection recover that loss?
+4. How does this vary with recurrence count \(K\)?
+5. What is the compute/latency tradeoff?
+6. Does the effect generalize beyond Wunder?
+
+Potential topic: "Weight tying cuts parameters by ~66%, hurts accuracy somewhat, and source reinjection recovers much of that loss at effectively zero parameter cost"
