@@ -1,0 +1,37 @@
+{
+  "gpu": "NVIDIA RTX 5000 Ada Generation",
+  "pytorch": "2.12.0+cu126",
+  "cuda_runtime": "12.6",
+  "chunk_size": 512,
+  "row_group": 0,
+  "seq_ix": 43601,
+  "results": [
+    {
+      "model": "baseline",
+      "parameters": 945602,
+      "parameter_memory_mib": 3.6071853637695312,
+      "inference_peak_allocated_mib": 25.61181640625,
+      "inference_peak_reserved_mib": 28.0,
+      "training_peak_allocated_mib": 89.85888671875,
+      "training_peak_reserved_mib": 138.0
+    },
+    {
+      "model": "looped",
+      "parameters": 317890,
+      "parameter_memory_mib": 1.2126541137695312,
+      "inference_peak_allocated_mib": 31.33740234375,
+      "inference_peak_reserved_mib": 46.0,
+      "training_peak_allocated_mib": 82.66064453125,
+      "training_peak_reserved_mib": 136.0
+    },
+    {
+      "model": "reinjected",
+      "parameters": 317891,
+      "parameter_memory_mib": 1.2126579284667969,
+      "inference_peak_allocated_mib": 31.58837890625,
+      "inference_peak_reserved_mib": 46.0,
+      "training_peak_allocated_mib": 83.16357421875,
+      "training_peak_reserved_mib": 136.0
+    }
+  ]
+}

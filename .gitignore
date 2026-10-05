@@ -14,8 +14,8 @@ checkpoints/
 
 # Experiment output
 runs/
-logs/
-results/
+#logs/
+#results/
 
 # Editors / OS
 .vscode/

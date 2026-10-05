@@ -1,0 +1,22 @@
+{
+  "t0": 0.5220120962812701,
+  "t1": 0.5476281552985963,
+  "weighted_pearson": 0.5348201257899332,
+  "blocks": 1873,
+  "blocks_with_scored_rows": 1873,
+  "selected_rows": 3528273,
+  "sequences": 1873,
+  "checkpoint": "results/reinjected_seed0_split1234.pt",
+  "results_json": "results/reinjected_seed0_split1234.json",
+  "model_config": {
+    "model": "reinjected",
+    "num_blocks": 3,
+    "num_iterations": 3
+  },
+  "data_path": "/home/alexander.pretko/wnn_connectome_starterpack/datasets/valid.parquet",
+  "device": "cuda",
+  "chunk_size": 512,
+  "max_sequences": null,
+  "total_validation_sequences": 1873,
+  "full_validation": true
+}
