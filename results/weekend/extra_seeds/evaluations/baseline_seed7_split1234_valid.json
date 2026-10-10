@@ -1,0 +1,23 @@
+{
+  "t0": 0.5451172867574288,
+  "t1": 0.5700705190292188,
+  "weighted_pearson": 0.5575939028933238,
+  "blocks": 1873,
+  "blocks_with_scored_rows": 1873,
+  "selected_rows": 3528273,
+  "sequences": 1873,
+  "checkpoint": "results/weekend/extra_seeds/baseline_seed7_split1234.pt",
+  "results_json": "results/weekend/extra_seeds/baseline_seed7_split1234.json",
+  "model_config": {
+    "model": "baseline",
+    "num_blocks": 3,
+    "num_iterations": 3
+  },
+  "data_path": "/home/alexander.pretko/wnn_connectome_starterpack/datasets/valid.parquet",
+  "device": "cuda",
+  "chunk_size": 8192,
+  "max_sequences": null,
+  "total_validation_sequences": 1873,
+  "full_validation": true,
+  "elapsed_seconds": 825.7674486637115
+}
