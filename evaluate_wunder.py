@@ -16,6 +16,8 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import torch
 
+import time
+
 from train_wunder import build_model
 from wunder_dataset import VALID_PATH, load_validation_sequence
 from wunder_metric import GlobalAccumulator
@@ -169,9 +171,14 @@ def main(argv=None):
     model.to(device)
 
     print(f"Model: {config['model']} | Device: {device} | Chunk size: {chunk_size}")
+    
+    start_time = time.time()
+    
     with pq.ParquetFile(args.data_path) as parquet_file:
         total_sequences = parquet_file.metadata.num_row_groups
         report = evaluate(model, parquet_file, device, chunk_size, args.max_sequences)
+    
+    elapsed_seconds = (time.time() - start_time)
 
     report.update({
         "checkpoint": str(args.checkpoint),
@@ -183,6 +190,7 @@ def main(argv=None):
         "max_sequences": args.max_sequences,
         "total_validation_sequences": total_sequences,
         "full_validation": report["sequences"] == total_sequences,
+        "elapsed_seconds": elapsed_seconds,
     })
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w") as f:
@@ -195,6 +203,7 @@ def main(argv=None):
     print(f"Sequences: {report['sequences']}")
     print(f"Selected rows: {report['selected_rows']}")
     print(f"Saved metric report: {output_path}")
+    print("Elapsed time:", f"{elapsed_seconds:.2f} seconds")
     return report
 
 
