@@ -1,0 +1,23 @@
+{
+  "t0": 0.5636850330977078,
+  "t1": 0.5716692202469386,
+  "weighted_pearson": 0.5676771266723232,
+  "blocks": 1873,
+  "blocks_with_scored_rows": 1873,
+  "selected_rows": 3528273,
+  "sequences": 1873,
+  "checkpoint": "results/weekend/depth/baseline_n2/baseline_seed1_split1234.pt",
+  "results_json": "results/weekend/depth/baseline_n2/baseline_seed1_split1234.json",
+  "model_config": {
+    "model": "baseline",
+    "num_blocks": 2,
+    "num_iterations": 3
+  },
+  "data_path": "/home/ubuntu/wnn_connectome_starterpack/datasets/valid.parquet",
+  "device": "cuda",
+  "chunk_size": 8192,
+  "max_sequences": null,
+  "total_validation_sequences": 1873,
+  "full_validation": true,
+  "elapsed_seconds": 792.4308052062988
+}

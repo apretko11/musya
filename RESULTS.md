@@ -1,22 +1,15 @@
-# Wunder Axial-GRU Preliminary Results
+# Wunder Axial-GRU Experimental Results
 
 ## Status
 
-These are preliminary results from the first controlled comparison of three architectures on the Wunder Connectome dataset:
+This document summarizes the current experimental results for a study of recurrent/shared depth in an axial financial time-series model.
 
-1. **Baseline** — three independently parameterized Axial-GRU blocks.
-2. **Looped** — one Axial-GRU block reused for three recurrent-depth iterations.
-3. **Reinjected looped** — same shared recurrent-depth block, with learned reinjection of the original encoded input before later iterations.
+The model operates over two structural axes:
 
-The main question is whether recurrent-depth parameter sharing can preserve predictive performance while substantially reducing the number of learned parameters, and whether source reinjection can recover or improve performance under weight sharing.
+1. an instrument axis, modeled using self-attention; and
+2. a temporal axis, modeled using a GRU.
 
-These results should be treated as an initial experiment rather than final paper results.
-
----
-
-# Experimental setup
-
-All three models use the same basic block:
+One Axial-GRU block is:
 
 ```text
 Asset self-attention
@@ -26,450 +19,1080 @@ Temporal GRU
 Feed-forward network
 ```
 
-Default dimensions:
+Three model families are compared:
 
-```text
-Input per instrument:     60 features
-Model dimension:          64
-Attention heads:          4
-GRU multiplier:           4
-Depth / iterations:       3
-Chunk size:               512
-```
+1. **Baseline** — multiple independently parameterized Axial-GRU blocks.
+2. **Looped** — one Axial-GRU block repeatedly reused across recurrent depth.
+3. **Reinjected looped** — the same shared block, with learned reinjection of the original encoded input before recurrent iterations after the first.
 
-Training configuration:
+The original hypothesis was that recurrent-depth weight sharing might preserve predictive performance while substantially reducing the number of learned parameters, and that source reinjection might recover information lost under repeated weight-tied transformations.
 
-```text
-Training sequences:       100
-Internal validation:      20 sequences
-Epochs:                   3
-Model seeds:              0, 1, 2
-Split seed:               1234
-Optimizer:                Adam
-Learning rate:            1e-4
-```
+The current results refine that hypothesis considerably.
 
-The same train/validation sequence split was used for all architectures and model seeds.
+The strongest evidence so far is not that recurrent depth outperforms a shallow parameter-matched model. Instead:
 
-Hardware:
+> Repeated application of a shared block progressively degrades predictive performance under the current setup, while reinjection of the original encoded representation consistently mitigates that degradation. The mitigation becomes larger at greater recurrent depth.
 
-```text
-GPU:                      NVIDIA RTX 5000 Ada Generation
-GPU memory:               ~32 GB
-PyTorch:                  2.12.0+cu126
-CUDA runtime:             12.6
-```
-
-The best checkpoint for each run was selected using internal validation MSE.
-
-Each best checkpoint was then evaluated over the complete Wunder validation set:
-
-```text
-Validation sequences:     1,873
-Scored rows:              3,528,273
-```
-
-The primary reported evaluation metric is Wunder's Global Weighted Pearson correlation.
+These results remain preliminary until the larger-data confirmation and final efficiency measurements are complete.
 
 ---
 
-# Model sizes
+# Dataset and task
 
-| Model | Trainable parameters | Parameter memory (FP32) | Reduction vs. baseline |
-|---|---:|---:|---:|
-| Baseline | 945,602 | 3.607 MiB | — |
-| Looped | 317,890 | 1.213 MiB | 66.4% |
-| Reinjected | 317,891 | 1.213 MiB | 66.4% |
+Experiments use the Wunder Connectome dataset.
 
-The looped architecture therefore uses approximately one-third as many trainable parameters as the baseline while retaining three block executions.
+Each sequence contains:
 
-The reinjected architecture adds only one trainable scalar parameter relative to the plain looped model.
+```text
+20,000 timesteps
+2 instruments: i0 and i1
+60 input features per instrument after preprocessing
+2 prediction targets: t0 and t1
+```
+
+The model input therefore has shape:
+
+```text
+[T, 2, 60]
+```
+
+and predictions have shape:
+
+```text
+[T, 2]
+```
+
+The two output dimensions correspond to `t0` and `t1`, not to the two instruments.
+
+Both targets concern instrument `i0`; instrument `i1` provides contextual information.
+
+The primary final-evaluation metric is Wunder's Global Weighted Pearson correlation.
+
+Full official validation contains:
+
+```text
+1,873 sequences
+3,528,273 scored rows
+```
 
 ---
 
-# Internal validation MSE
+# Core architecture
 
-## Baseline
-
-```text
-Seed 0: 1.603287
-Seed 1: 1.616629
-Seed 2: 1.611235
-```
-
-## Looped
+Default model dimensions:
 
 ```text
-Seed 0: 1.614550
-Seed 1: 1.611696
-Seed 2: 1.620297
+Input features per instrument: 60
+Model dimension:               64
+Attention heads:               4
+GRU multiplier:                4
+Training chunk size:           512
 ```
 
-## Reinjected
+A complete Axial-GRU block performs:
 
 ```text
-Seed 0: 1.613851
-Seed 1: 1.612738
-Seed 2: 1.621159
+1. cross-instrument self-attention
+2. temporal GRU processing
+3. per-representation feed-forward transformation
 ```
 
-The internal validation MSE values are broadly similar across architectures.
-
-These values were used for checkpoint selection, but the primary evaluation metric for the task is Weighted Pearson rather than MSE.
+Residual connections are used inside each stage.
 
 ---
 
-# Full Wunder validation results
+# Model families
 
-## Baseline
+## Independent baseline
 
-| Seed | t0 | t1 | Global Weighted Pearson |
-|---|---:|---:|---:|
+For depth N:
+
+```text
+Encoder
+   ↓
+Block θ1
+   ↓
+Block θ2
+   ↓
+...
+   ↓
+Block θN
+   ↓
+Prediction head
+```
+
+Each block has independent parameters.
+
+---
+
+## Looped recurrent depth
+
+For recurrent depth K:
+
+```text
+Encoder
+   ↓
+Block θ
+   ↓
+same Block θ
+   ↓
+...
+   ↓
+same Block θ
+   ↓
+Prediction head
+```
+
+The same block parameters are reused for every recurrent-depth iteration.
+
+---
+
+## Reinjected recurrent depth
+
+The reinjected model preserves the original encoded representation:
+
+```text
+H0 = Encoder(X)
+```
+
+The first recurrent-depth iteration receives `H0` directly.
+
+For later iterations:
+
+```text
+H_mixed = (1 - g) H_current + g H0
+```
+
+where:
+
+```text
+g = sigmoid(reinjection_logit)
+```
+
+and `reinjection_logit` is a learned scalar parameter.
+
+The mixed representation is then passed through the same shared Axial-GRU block.
+
+---
+
+# Experimental protocol
+
+Unless otherwise specified:
+
+```text
+Training sequences:             100
+Internal validation sequences:  20
+Epochs:                         3
+Split seed:                     1234
+Optimizer:                      Adam
+Learning rate:                  1e-4
+Training chunk size:            512
+```
+
+The same train/internal-validation split is used across compared configurations.
+
+The best checkpoint is selected using internal validation MSE.
+
+That checkpoint is then evaluated over all 1,873 official validation sequences using Global Weighted Pearson.
+
+Official validation inference was initially performed with chunk size 512.
+
+A later chunk-size benchmark showed that larger evaluation chunks produce effectively identical predictions and scores while reducing evaluation time.
+
+The evaluation chunk size used for subsequent experiments is:
+
+```text
+8192
+```
+
+---
+
+# Evaluation chunk-size benchmark
+
+One checkpoint was evaluated over the same 100 official validation sequences using four inference chunk sizes.
+
+| Chunk size | Weighted Pearson | Time |
+|---:|---:|---:|
+| 512 | 0.5470113284 | 52.32 s |
+| 2,048 | 0.5470113426 | 40.94 s |
+| 8,192 | 0.5470113594 | 39.95 s |
+| 20,000 | 0.5470113587 | 41.42 s |
+
+Differences in Weighted Pearson are on the order of approximately:
+
+```text
+10^-8
+```
+
+and are therefore negligible for the present experiments.
+
+Chunk size 8192 was selected for later full validation runs.
+
+---
+
+# Hardware
+
+Experiments have been executed on two NVIDIA GPUs.
+
+## Campus GPU
+
+```text
+NVIDIA RTX 5000 Ada Generation
+VRAM: approximately 32 GB
+Driver: 570.195.03
+PyTorch: 2.12.0+cu126
+CUDA runtime: 12.6
+```
+
+## Hyperstack GPU
+
+```text
+NVIDIA RTX A4000
+VRAM: approximately 15 GB
+Driver: 570.195.03
+PyTorch: 2.12.0+cu126
+CUDA runtime: 12.6
+```
+
+A matched smoke experiment produced effectively identical losses on the two GPUs, with only very small floating-point differences.
+
+The A4000 was approximately 1.6x slower for the small smoke-training run.
+
+Final efficiency comparisons should therefore be performed on one consistent GPU rather than comparing raw runtime measurements across the two systems.
+
+---
+
+# Parameter counts
+
+One Axial-GRU block plus the common encoder/head uses approximately:
+
+```text
+317,890 trainable parameters
+```
+
+The independently parameterized baseline grows with depth.
+
+| Configuration | Trainable parameters |
+|---|---:|
+| Baseline N=1 | 317,890 |
+| Baseline N=2 | 631,746 |
+| Baseline N=3 | 945,602 |
+| Baseline N=4 | 1,259,458 |
+| Looped K=1 | 317,890 |
+| Looped K=2 | 317,890 |
+| Looped K=3 | 317,890 |
+| Looped K=4 | 317,890 |
+| Reinjected K=1 | 317,891 |
+| Reinjected K=2 | 317,891 |
+| Reinjected K=3 | 317,891 |
+| Reinjected K=4 | 317,891 |
+
+The reinjected architecture adds only one scalar trainable parameter relative to the plain looped model.
+
+At depth three:
+
+```text
+Baseline N=3:   945,602 parameters
+Looped K=3:     317,890 parameters
+Reinjected K=3: 317,891 parameters
+```
+
+Thus recurrent-depth sharing reduces trainable parameters by approximately:
+
+```text
+66.4%
+```
+
+relative to the three-block independent baseline.
+
+---
+
+# Ten-seed main comparison
+
+The original experiment used only three seeds and initially suggested that recurrent weight sharing might preserve or slightly improve performance.
+
+That result did not survive expansion to ten seeds.
+
+All configurations below use depth/iterations = 3.
+
+## Baseline N=3
+
+| Seed | t0 | t1 | Weighted Pearson |
+|---:|---:|---:|---:|
 | 0 | 0.56192499 | 0.56308761 | 0.56250630 |
 | 1 | 0.47787860 | 0.52279898 | 0.50033879 |
 | 2 | 0.55603815 | 0.56537836 | 0.56070826 |
+| 3 | 0.56575169 | 0.57213811 | 0.56894490 |
+| 4 | 0.56179482 | 0.56759532 | 0.56469507 |
+| 5 | 0.57502521 | 0.54647978 | 0.56075250 |
+| 6 | 0.55237630 | 0.56110694 | 0.55674162 |
+| 7 | 0.54511729 | 0.57007052 | 0.55759390 |
+| 8 | 0.56270053 | 0.55795561 | 0.56032807 |
+| 9 | 0.55105445 | 0.56744887 | 0.55925166 |
 
 ```text
-Mean Weighted Pearson: 0.54118445
-Standard deviation:    0.03538480
+Mean Weighted Pearson: 0.55518611
+Standard deviation:    0.01959082
+Minimum:               0.50033879
+Maximum:               0.56894490
 ```
 
 ---
 
-## Looped
+## Looped K=3
 
-| Seed | t0 | t1 | Global Weighted Pearson |
-|---|---:|---:|---:|
+| Seed | t0 | t1 | Weighted Pearson |
+|---:|---:|---:|---:|
 | 0 | 0.51969635 | 0.54533678 | 0.53251656 |
 | 1 | 0.53642966 | 0.56547854 | 0.55095410 |
 | 2 | 0.54655214 | 0.56381882 | 0.55518548 |
+| 3 | 0.45826621 | 0.54727605 | 0.50277113 |
+| 4 | 0.54926504 | 0.55499271 | 0.55212887 |
+| 5 | 0.55549897 | 0.55657101 | 0.55603499 |
+| 6 | 0.50421041 | 0.52741479 | 0.51581260 |
+| 7 | 0.39879038 | 0.53265778 | 0.46572408 |
+| 8 | 0.35364899 | 0.51560229 | 0.43462564 |
+| 9 | 0.53583805 | 0.56957859 | 0.55270832 |
 
 ```text
-Mean Weighted Pearson: 0.54621872
-Standard deviation:    0.01205354
+Mean Weighted Pearson: 0.52184618
+Standard deviation:    0.04251588
+Minimum:               0.43462564
+Maximum:               0.55603499
 ```
 
 ---
 
-## Reinjected looped
+## Reinjected K=3
 
-| Seed | t0 | t1 | Global Weighted Pearson |
-|---|---:|---:|---:|
+| Seed | t0 | t1 | Weighted Pearson |
+|---:|---:|---:|---:|
 | 0 | 0.52201210 | 0.54762816 | 0.53482013 |
 | 1 | 0.53677109 | 0.56476555 | 0.55076832 |
 | 2 | 0.54900103 | 0.56804401 | 0.55852252 |
+| 3 | 0.46446699 | 0.55102704 | 0.50774701 |
+| 4 | 0.55487880 | 0.55820783 | 0.55654332 |
+| 5 | 0.56017741 | 0.55987129 | 0.56002435 |
+| 6 | 0.51044762 | 0.53078972 | 0.52061867 |
+| 7 | 0.41720841 | 0.53406889 | 0.47563865 |
+| 8 | 0.55158830 | 0.56171331 | 0.55665081 |
+| 9 | 0.53749526 | 0.56905539 | 0.55327533 |
 
 ```text
-Mean Weighted Pearson: 0.54803699
-Standard deviation:    0.01208495
+Mean Weighted Pearson: 0.53746091
+Standard deviation:    0.02810262
+Minimum:               0.47563865
+Maximum:               0.56002435
 ```
 
 ---
 
-# Summary comparison
+# Ten-seed summary
 
-| Model | Parameters | Weighted Pearson mean | Std. dev. |
+| Model | Parameters | Mean Weighted Pearson | Std. dev. |
 |---|---:|---:|---:|
-| Baseline | 945,602 | 0.54118445 | 0.03538480 |
-| Looped | 317,890 | 0.54621872 | 0.01205354 |
-| Reinjected | 317,891 | 0.54803699 | 0.01208495 |
+| Baseline N=3 | 945,602 | 0.55518611 | 0.01959082 |
+| Looped K=3 | 317,890 | 0.52184618 | 0.04251588 |
+| Reinjected K=3 | 317,891 | 0.53746091 | 0.02810262 |
 
-Differences in mean score:
+The ten-seed study reverses the interpretation suggested by the original three-seed experiment.
+
+At K=3:
 
 ```text
-Looped - Baseline:
-+0.00503427
-
-Reinjected - Baseline:
-+0.00685254
-
-Reinjected - Looped:
-+0.00181827
+Baseline > Reinjected > Looped
 ```
 
-At this stage, these differences should be treated descriptively rather than as statistically established improvements because only three model seeds have been evaluated.
+on mean Weighted Pearson.
+
+Plain recurrent depth also exhibits substantially larger seed-to-seed variation than the independent baseline.
+
+Reinjection recovers part of the performance lost by naive recurrent depth, but does not fully close the gap to the independently parameterized baseline.
 
 ---
 
-# Reinjection gate
+# Five-seed depth study
 
-The reinjected model initializes its scalar gate as:
+A targeted depth study was run using seeds 0-4.
 
-```text
-sigmoid(-2) ≈ 0.1192
-```
-
-The learned gate values from the three runs were:
-
-```text
-Seed 0: 0.137848
-Seed 1: 0.142629
-Seed 2: 0.143389
-```
-
-All three runs moved the gate upward from its initialization.
-
-This indicates that optimization consistently learned to increase the contribution of the original encoded input beyond the initial ~11.9%.
-
-The gate remains relatively small, however, so the model still primarily uses the current recurrent-depth representation rather than replacing it with the original input.
+The goal was to determine whether performance degradation depends systematically on recurrent depth.
 
 ---
 
-# Training runtime
+## Baseline: independent depth
 
-Total runtime for the three-epoch training runs:
+| Depth | Mean Weighted Pearson | Std. dev. |
+|---:|---:|---:|
+| N=1 | 0.56652162 | 0.00453565 |
+| N=2 | 0.56762320 | 0.00205026 |
+| N=3 | 0.55143866 | 0.02873071 |
+| N=4 | 0.55112109 | 0.00940587 |
 
-| Model | Seed 0 | Seed 1 | Seed 2 |
-|---|---:|---:|---:|
-| Baseline | 335.2 s | 412.2 s | 346.9 s |
-| Looped | 326.5 s | 350.9 s | 334.7 s |
-| Reinjected | 339.2 s | 330.3 s | 343.9 s |
+Per-seed Weighted Pearson:
 
-There is no evidence from these initial measurements of a major runtime reduction from parameter sharing.
+```text
+N=1:
+0.56694662
+0.57247483
+0.56345885
+0.56885076
+0.56087701
 
-This is expected because all three architectures still execute approximately the same number of Axial-GRU block passes.
+N=2:
+0.56774728
+0.56767713
+0.56924202
+0.56923089
+0.56421870
 
-Weight sharing reduces the number of stored parameters, not the number of block computations.
+N=3:
+0.56250630
+0.50033879
+0.56070826
+0.56894490
+0.56469507
+
+N=4:
+0.55453745
+0.54405364
+0.56089844
+0.53862666
+0.55748926
+```
+
+The strongest five-seed mean is currently:
+
+```text
+Baseline N=2:
+0.56762320 ± 0.00205026
+```
+
+The two-block independent baseline is also highly stable across these five seeds.
+
+Adding independent depth beyond two blocks does not improve performance under the current training regime.
 
 ---
 
-# GPU memory benchmark
+# Looped recurrent depth
 
-Memory was measured using a real Wunder sequence with:
+| Iterations | Mean Weighted Pearson | Std. dev. |
+|---:|---:|---:|
+| K=1 | 0.56652162 | 0.00453565 |
+| K=2 | 0.56149092 | 0.00255069 |
+| K=3 | 0.53871123 | 0.02197377 |
+| K=4 | 0.52567327 | 0.02120812 |
+
+Per-seed Weighted Pearson:
 
 ```text
-Chunk size:         512
-Batch size:         1
-Datatype:           FP32
-Optimizer:          Adam
+K=1:
+0.56694662
+0.57247483
+0.56345885
+0.56885076
+0.56087701
+
+K=2:
+0.56407580
+0.55926242
+0.55974831
+0.56446204
+0.55990601
+
+K=3:
+0.53251656
+0.55095410
+0.55518548
+0.50277113
+0.55212887
+
+K=4:
+0.52227850
+0.52314043
+0.54811502
+0.49352890
+0.54130352
 ```
 
-For training memory, an initial optimizer step was performed before measurement so that Adam's optimizer-state buffers were allocated.
+K=1 is equivalent to a one-block independent baseline because the shared block is executed only once.
 
-## Measured memory
+The pattern with increasing recurrent depth is monotonic in the five-seed mean:
+
+```text
+K=1: 0.56652
+K=2: 0.56149
+K=3: 0.53871
+K=4: 0.52567
+```
+
+Thus, in the current architecture and optimization regime, repeatedly applying the same block does not provide useful additional depth.
+
+Instead, predictive performance progressively deteriorates as recurrent depth increases.
+
+---
+
+# Reinjected recurrent depth
+
+| Iterations | Mean Weighted Pearson | Std. dev. |
+|---:|---:|---:|
+| K=1 | 0.56652162 | 0.00453565 |
+| K=2 | 0.56253948 | 0.00225412 |
+| K=3 | 0.54168026 | 0.02112872 |
+| K=4 | 0.53619779 | 0.02160521 |
+
+Per-seed Weighted Pearson:
+
+```text
+K=1:
+0.56694662
+0.57247483
+0.56345885
+0.56885076
+0.56087701
+
+K=2:
+0.56441069
+0.56046738
+0.56103247
+0.56549100
+0.56129587
+
+K=3:
+0.53482013
+0.55076832
+0.55852252
+0.50774701
+0.55654332
+
+K=4:
+0.52874025
+0.54636670
+0.55359965
+0.50161546
+0.55066692
+```
+
+Reinjection does not eliminate recurrent-depth degradation.
+
+However, it consistently mitigates that degradation.
+
+---
+
+# Paired reinjection effect
+
+Because looped and reinjected models are trained with matched seeds, the most direct comparison is:
+
+```text
+Weighted Pearson(reinjected)
+-
+Weighted Pearson(looped)
+```
+
+for the same seed and recurrent depth.
+
+## K=2
+
+```text
+Seed 0: +0.00033489
+Seed 1: +0.00120496
+Seed 2: +0.00128416
+Seed 3: +0.00102896
+Seed 4: +0.00138985
+```
+
+```text
+Mean improvement: +0.00104856
+Std. dev.:        0.00042017
+```
+
+Reinjection improves K=2 performance in all five seeds.
+
+---
+
+## K=3
+
+```text
+Seed 0: +0.00230356
+Seed 1: -0.00018578
+Seed 2: +0.00333703
+Seed 3: +0.00497588
+Seed 4: +0.00441445
+```
+
+```text
+Mean improvement: +0.00296903
+Std. dev.:        0.00204008
+```
+
+Reinjection improves four of the five paired K=3 runs.
+
+---
+
+## K=4
+
+```text
+Seed 0: +0.00646175
+Seed 1: +0.02322627
+Seed 2: +0.00548463
+Seed 3: +0.00808655
+Seed 4: +0.00936340
+```
+
+```text
+Mean improvement: +0.01052452
+Std. dev.:        0.00725488
+```
+
+Reinjection improves K=4 performance in all five seeds.
+
+---
+
+# Reinjection effect versus recurrent depth
+
+The mean paired reinjection advantage increases with recurrent depth:
+
+```text
+K=2: +0.00105
+K=3: +0.00297
+K=4: +0.01052
+```
+
+This is currently the most interesting positive architectural result.
+
+The data are consistent with the interpretation that preserving access to the original encoded representation becomes increasingly useful as the same transformation is repeatedly reapplied.
+
+However, the experiments do not yet identify the exact mechanism responsible for recurrent-depth degradation.
+
+Terms such as:
+
+```text
+representation drift
+over-refinement
+information loss
+optimization difficulty
+```
+
+should therefore be treated as hypotheses rather than established explanations.
+
+---
+
+# Parameter-efficiency interpretation
+
+The depth study provides a direct parameter-matched comparison.
+
+A one-block baseline and all plain looped models have essentially the same number of parameters:
+
+```text
+Baseline N=1: 317,890 parameters
+
+Looped K=1:   317,890
+Looped K=2:   317,890
+Looped K=3:   317,890
+Looped K=4:   317,890
+```
+
+Yet the five-seed results are:
+
+```text
+Baseline N=1: 0.56652
+Looped K=2:   0.56149
+Looped K=3:   0.53871
+Looped K=4:   0.52567
+```
+
+Thus additional recurrent computation does not improve performance over simply applying the parameter-matched block once.
+
+The current evidence therefore does not support the claim that recurrent depth itself improves the parameter/performance tradeoff.
+
+---
+
+# Comparison with the strongest baseline
+
+The strongest current configuration is:
+
+```text
+Baseline N=2
+631,746 parameters
+Weighted Pearson:
+0.56762320 ± 0.00205026
+```
+
+A single-block model uses approximately half as many parameters:
+
+```text
+Baseline N=1
+317,890 parameters
+Weighted Pearson:
+0.56652162 ± 0.00453565
+```
+
+The performance difference between N=1 and N=2 is small in the current five-seed experiment.
+
+This suggests that much of the useful predictive performance may already be obtained with a relatively shallow architecture.
+
+That observation should be tested again in the larger-data experiment.
+
+---
+
+# Initial GPU memory benchmark
+
+The existing memory benchmark was performed using the original N=3/K=3 configurations.
+
+Conditions:
+
+```text
+Chunk size: 512
+Batch size: 1
+Datatype:   FP32
+Optimizer:  Adam
+```
+
+For training, an initial optimizer step was performed before measurement so that Adam's optimizer-state buffers were allocated.
+
+## Existing single-run measurements
 
 | Model | Parameter memory | Inference peak allocated | Training peak allocated |
 |---|---:|---:|---:|
-| Baseline | 3.607 MiB | 25.61 MiB | 89.86 MiB |
-| Looped | 1.213 MiB | 31.34 MiB | 82.66 MiB |
-| Reinjected | 1.213 MiB | 31.59 MiB | 83.16 MiB |
+| Baseline N=3 | 3.607 MiB | 25.61 MiB | 89.86 MiB |
+| Looped K=3 | 1.213 MiB | 31.34 MiB | 82.66 MiB |
+| Reinjected K=3 | 1.213 MiB | 31.59 MiB | 83.16 MiB |
 
 Peak reserved memory:
 
 | Model | Inference reserved | Training reserved |
 |---|---:|---:|
-| Baseline | 28.00 MiB | 138.00 MiB |
-| Looped | 46.00 MiB | 136.00 MiB |
-| Reinjected | 46.00 MiB | 136.00 MiB |
+| Baseline N=3 | 28.00 MiB | 138.00 MiB |
+| Looped K=3 | 46.00 MiB | 136.00 MiB |
+| Reinjected K=3 | 46.00 MiB | 136.00 MiB |
 
-The parameter-memory reduction is large and deterministic:
+Parameter storage is reduced substantially by weight sharing.
 
-```text
-Baseline:      3.607 MiB
-Looped:        1.213 MiB
-Reinjected:    1.213 MiB
-```
+However, total runtime memory does not fall proportionally because weights are only one component of the total footprint.
 
-However, total GPU memory does not decrease proportionally because model weights are only a small portion of the total runtime memory footprint.
-
-Training activations, recurrent intermediates, gradients, optimizer state, and CUDA workspaces dominate memory at this model scale.
-
-The looped models showed a modest reduction in measured peak training allocation:
+Training also requires:
 
 ```text
-Baseline:      89.86 MiB
-Looped:        82.66 MiB
-Reinjected:    83.16 MiB
+activations
+GRU intermediates
+gradients
+optimizer state
+CUDA workspaces
 ```
 
-Unexpectedly, the looped models showed somewhat higher peak inference allocation:
+The looped models showed modestly lower peak training allocation but unexpectedly higher peak inference allocation.
 
-```text
-Baseline:      25.61 MiB
-Looped:        31.34 MiB
-Reinjected:    31.59 MiB
-```
+These values currently come from one benchmark run and should not be treated as final efficiency results.
 
-Because this inference-memory difference is small in absolute terms and currently comes from one benchmark run, it should be replicated before drawing conclusions.
+A repeated benchmark is still required.
 
 ---
 
-# Preliminary conclusions
+# Updated conclusions
 
-## 1. Recurrent depth dramatically reduces trainable parameter count
+## 1. Recurrent weight sharing substantially reduces parameter count
 
-Replacing three independent Axial-GRU blocks with one repeatedly applied shared block reduced trainable parameters from:
-
-```text
-945,602
-```
-
-to:
+At three effective depth passes:
 
 ```text
-317,890
+Baseline N=3:   945,602 parameters
+Looped K=3:     317,890 parameters
+Reinjected K=3: 317,891 parameters
 ```
 
-which is approximately a:
+This is approximately a 66.4% parameter reduction.
 
-```text
-66.4% reduction
-```
-
-This is the clearest result from the current experiment.
+That result is deterministic.
 
 ---
 
-## 2. The parameter reduction did not reduce mean predictive performance
+## 2. Naive recurrent depth does not preserve performance
 
-Despite using approximately one-third as many parameters, the looped model achieved:
-
-```text
-Baseline mean WP: 0.54118
-Looped mean WP:   0.54622
-```
-
-The reinjected model achieved:
+The ten-seed comparison shows:
 
 ```text
-Reinjected mean WP: 0.54804
+Baseline N=3:
+0.55519 ± 0.01959
+
+Looped K=3:
+0.52185 ± 0.04252
 ```
 
-Thus, in this initial experiment, aggressive recurrent-depth parameter sharing preserved mean predictive performance.
+Thus the original three-seed indication that shared recurrent depth preserved performance was misleading.
 
-The current data does not justify claiming a statistically significant performance improvement.
+With more seeds, naive repeated weight tying clearly underperforms the independently parameterized baseline at K=3.
 
 ---
 
-## 3. The shared-depth models were more consistent across these three seeds
+## 3. Recurrent-depth degradation increases with depth
 
-Observed standard deviations were:
+The five-seed looped means are:
 
 ```text
-Baseline:      0.03538
-Looped:        0.01205
-Reinjected:    0.01208
+K=1: 0.56652
+K=2: 0.56149
+K=3: 0.53871
+K=4: 0.52567
 ```
 
-The baseline's larger variance is driven in particular by seed 1, which scored substantially below seeds 0 and 2.
-
-This is potentially interesting, but three seeds are insufficient to conclude that weight sharing genuinely improves training stability.
-
-More seeds are required.
+The degradation is systematic across the tested recurrent depths.
 
 ---
 
-## 4. Reinjection produced a small additional improvement
+## 4. Reinjection consistently mitigates recurrent-depth degradation
 
-Mean Weighted Pearson:
-
-```text
-Looped:        0.54622
-Reinjected:    0.54804
-```
-
-The difference is:
+The paired reinjection improvement increases with depth:
 
 ```text
-+0.00182
+K=2: +0.00105
+K=3: +0.00297
+K=4: +0.01052
 ```
 
-This is in the desired direction but is currently too small relative to seed variation to support a strong claim.
+At K=2 and K=4, reinjection improved every one of the five paired seed comparisons.
 
-The learned gates nevertheless provide evidence that the model actively uses the reinjection mechanism.
-
-All three gates increased from the initial value of approximately 0.1192 to approximately 0.138-0.143.
+This is currently the clearest positive result supporting the reinjection mechanism.
 
 ---
 
-## 5. Fewer parameters does not imply proportionally lower runtime GPU memory
+## 5. Reinjection is a mitigation mechanism, not a complete recovery
 
-The looped models reduce model-weight storage by approximately two-thirds, but activation and optimizer memory dominate the current small architecture.
-
-As a result:
+Even with reinjection:
 
 ```text
-Parameter memory:
-~66% lower
-
-Peak training GPU allocation:
-only modestly lower
+Reinjected K=4:
+0.53620 ± 0.02161
 ```
 
-Inference GPU memory was actually somewhat higher for the shared-depth models in the initial benchmark.
+remains substantially below:
 
-This distinction between parameter efficiency and runtime memory efficiency should be maintained explicitly.
+```text
+Baseline N=1:
+0.56652 ± 0.00454
+
+Baseline N=2:
+0.56762 ± 0.00205
+```
+
+Therefore the current evidence does not support claiming that reinjection solves the recurrent-depth problem.
+
+It partially mitigates it.
 
 ---
 
-# Current interpretation
+## 6. Shallow independent models are currently strongest
 
-The strongest statement supported by the experiment so far is:
+The strongest current mean is:
 
-> A three-pass recurrent-depth Axial-GRU using one shared block achieved comparable or slightly higher mean Wunder validation performance than a three-block independently parameterized baseline while using approximately 66% fewer trainable parameters.
+```text
+Baseline N=2:
+0.56762320 ± 0.00205026
+```
 
-A secondary preliminary observation is:
+The parameter-matched one-block model is close:
 
-> Reinjection of the original encoded input produced a small additional improvement over plain recurrent depth, and the learned gate consistently increased above its initialization across all three seeds.
+```text
+Baseline N=1:
+0.56652162 ± 0.00453565
+```
 
-Neither the performance improvement nor the apparent reduction in seed sensitivity should yet be treated as established conclusions.
+This suggests that increasing architectural depth is not inherently beneficial for the present task and training regime.
 
 ---
 
-# Next experimental questions
+## 7. Multi-seed evaluation materially changed the conclusion
 
-The current results motivate several follow-up experiments:
+The initial three-seed experiment suggested a positive result for recurrent weight sharing.
 
-1. Increase the number of random seeds to determine whether the mean and variance differences are robust.
+The ten-seed main comparison and five-seed depth study reversed that interpretation.
 
-2. Test recurrent-depth iteration counts such as:
+This demonstrates that conclusions about these models are sensitive to random initialization and should not be based on a very small number of seeds.
+
+---
+
+# Current working interpretation
+
+The strongest claim presently supported by the data is:
+
+> Repeated weight-tied depth in this dual-axis financial time-series architecture causes increasing predictive degradation as recurrent depth grows. Reinjecting the original encoded representation consistently mitigates this degradation, and the mitigation becomes larger at greater recurrent depth.
+
+A second supported observation is:
+
+> Under the present setup, recurrent computation does not outperform a shallow parameter-matched model, despite requiring repeated block execution.
+
+The results do not currently support the stronger claim that recurrent depth provides a superior parameter/performance tradeoff.
+
+---
+
+# Remaining experiments
+
+The experimental scope should now be narrowed rather than expanded.
+
+## 1. Larger-data confirmation
+
+The immediate next experiment should determine whether the current pattern survives when the model is trained on substantially more data.
+
+Proposed screening setup:
 
 ```text
-K = 1
-K = 2
-K = 3
-K = 4
+Training sequences:             1,000
+Internal validation sequences:  200
+Epochs:                         3
+Initial seed:                   0
 ```
 
-to determine the relationship between iterative refinement and predictive performance.
+Representative configurations:
 
-3. Compare reinjection strategies:
-   - no reinjection
-   - fixed reinjection gate
-   - one learned global gate
-   - one learned gate per recurrent-depth iteration
-   - potentially dynamic/context-dependent gating
+```text
+Baseline N=1
+Baseline N=2
 
-4. Repeat the GPU memory benchmark several times to verify the unexpected inference-memory result.
+Looped K=2
+Reinjected K=2
 
-5. Test parameter-matched controls so that improvements can be attributed more clearly to recurrent depth rather than merely differences in effective capacity.
+Looped K=4
+Reinjected K=4
+```
 
-6. Train on a larger portion of the available Wunder training set.
+This experiment tests:
 
-7. Evaluate whether the current conclusions hold at larger model widths.
+1. whether N=1 and N=2 remain strong with more data;
+2. whether repeated weight tying still degrades performance;
+3. whether reinjection still improves the matched looped model;
+4. whether the reinjection advantage still grows at larger recurrent depth.
 
-8. Test a second financial time-series dataset if available to determine whether the effect generalizes beyond Wunder.
+If the qualitative pattern survives at seed 0, the key comparisons should then be repeated across additional seeds.
+
+---
+
+## 2. Final memory and efficiency characterization
+
+The existing single-run memory benchmark should be repeated.
+
+Final measurements should include:
+
+```text
+parameter count
+parameter memory
+peak training allocated memory
+peak inference allocated memory
+peak reserved memory
+training runtime
+inference runtime
+```
+
+Measurements should be repeated several times on the same GPU.
+
+The final configurations used for memory benchmarking should be chosen after the larger-data screen so that efficiency is measured for the architectures actually discussed in the paper.
+
+---
+
+## 3. Reinjection-gate analysis
+
+The learned reinjection gate should be summarized across:
+
+```text
+seed
+recurrent depth
+```
+
+Useful questions include:
+
+```text
+Does the learned gate increase with recurrent depth?
+
+Is a larger gate associated with larger recovery over plain looping?
+
+How variable is the learned gate across seeds?
+```
+
+This provides a simple mechanistic analysis without adding a more complicated architecture.
+
+---
+
+## 4. Statistical analysis
+
+Final comparisons should report:
+
+```text
+mean
+standard deviation
+paired seed differences
+confidence intervals where appropriate
+```
+
+The reinjected-versus-looped comparison is naturally paired because corresponding runs use the same random seed and data split.
+
+For the final selected configurations, paired statistical testing or bootstrap confidence intervals should be considered.
+
+---
+
+## 5. Optional fixed-gate ablation
+
+If time permits, compare:
+
+```text
+plain looped
+fixed reinjection gate
+learned reinjection gate
+```
+
+This would help determine whether the improvement comes primarily from the existence of a source-reinjection path or from learning the amount of reinjection.
+
+This experiment is lower priority than the larger-data confirmation.
+
+---
+
+## 6. External generalization
+
+A second dataset would substantially strengthen the generality of the findings.
+
+This is desirable for a broad machine-learning submission but is not required before determining whether the core Wunder result is robust.
 
 ---
 
 # Short version for discussion
 
-The first experiment is promising.
+The larger experiment changed the story.
 
-Using one Axial-GRU block repeatedly instead of three separate blocks reduces the parameter count by approximately 66%.
+Naively reusing one Axial-GRU block does reduce parameters substantially, but repeated use of the same block progressively hurts prediction quality.
 
-Despite this reduction, the three-seed mean Weighted Pearson score was slightly higher:
+Across five seeds:
 
 ```text
-Baseline:      0.5412 ± 0.0354
-Looped:        0.5462 ± 0.0121
-Reinjected:    0.5480 ± 0.0121
+Looped K=1: 0.5665
+Looped K=2: 0.5615
+Looped K=3: 0.5387
+Looped K=4: 0.5257
 ```
 
-The reinjected version performed slightly better than the plain looped model, although the difference is currently small.
+Reinjecting the original encoded input does not completely solve this problem, but it consistently reduces the degradation:
 
-The shared-depth models also showed much lower variance across the three seeds, but more seeds are needed before interpreting this as improved stability.
+```text
+Reinjection advantage:
 
-The reduction in parameter count does not translate directly into an equivalent GPU-memory reduction because activations and training state dominate memory for this relatively small model.
+K=2: +0.0010
+K=3: +0.0030
+K=4: +0.0105
+```
 
-Overall, the initial result supports continuing the recurrent-depth direction and justifies a broader ablation study.
+The benefit of reinjection therefore grows as recurrent depth becomes more damaging.
+
+The strongest model currently is a conventional two-block independent baseline:
+
+```text
+Baseline N=2:
+0.5676 ± 0.0021
+```
+
+A one-block model is nearly as strong:
+
+```text
+Baseline N=1:
+0.5665 ± 0.0045
+```
+
+The current contribution is therefore not that recurrent depth beats a shallow parameter-matched model.
+
+The more defensible result is that recurrent weight tying introduces depth-dependent degradation, and source reinjection provides a simple, low-parameter mechanism that consistently mitigates that degradation.
+
+The next critical test is whether this pattern survives when training is expanded from 100 to 1,000 sequences.
